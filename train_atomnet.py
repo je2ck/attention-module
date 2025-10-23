@@ -374,31 +374,36 @@ def evaluate(
     return running_loss / n, running_acc / n
 
 @torch.no_grad()
-def evaluate_confusion(model, loader, device, binary=True):
+def evaluate_confusion(model, loader, device, binary: bool):
     model.eval()
     TP = TN = FP = FN = 0
 
     for x, y in loader:
-        x = x.to(device)
-        y = y.to(device)
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
 
         logits = model(x)
-        probs = torch.sigmoid(logits) if binary else torch.softmax(logits, dim=1)
-        preds = (probs >= 0.5).float() if binary else torch.argmax(probs, dim=1)
 
         if binary:
-            # preds, y: shape (B,1) → flatten
-            preds = preds.view(-1)
-            y = y.view(-1)
-            TP += ((preds == 1) & (y == 1)).sum().item()
-            TN += ((preds == 0) & (y == 0)).sum().item()
-            FP += ((preds == 1) & (y == 0)).sum().item()
-            FN += ((preds == 0) & (y == 1)).sum().item()
+            # logits: (B,1), y: (B,1) in {0,1}
+            probs = torch.sigmoid(logits).view(-1)        # (B,)
+            preds = (probs >= 0.5).long()                 # (B,)
+            y_true = y.view(-1).long()                    # (B,)
         else:
-            raise NotImplementedError("다중 클래스면 말해줘. 그에 맞게 confusion matrix 구성해줄게.")
+            # logits: (B,C) with C>=2, y: (B,) class index
+            preds = torch.argmax(logits, dim=1).long()    # (B,)
+            y_true = y.view(-1).long()                    # (B,)
+            # 이진 혼동행렬이 필요하므로 '클래스 1을 양성'으로 간주
+            preds = (preds == 1).long()
+            y_true = (y_true == 1).long()
+
+        TP += ((preds == 1) & (y_true == 1)).sum().item()
+        TN += ((preds == 0) & (y_true == 0)).sum().item()
+        FP += ((preds == 1) & (y_true == 0)).sum().item()
+        FN += ((preds == 0) & (y_true == 1)).sum().item()
 
     total = TP + TN + FP + FN
-    acc = (TP + TN) / total if total > 0 else 0
+    acc = (TP + TN) / total if total > 0 else 0.0
     return acc, TP, TN, FP, FN
 
 
@@ -536,7 +541,7 @@ def main(
         print(f"Loaded best checkpoint from epoch {ckpt['epoch']} with val_acc={ckpt['val_acc']:.4f}")
 
     te_loss, te_acc = evaluate(model, test_ld, loss_fn, device, binary)
-    acc2, TP, TN, FP, FN = evaluate_confusion(model, test_ld, device, binary=True)
+    acc2, TP, TN, FP, FN = evaluate_confusion(model, test_ld, device, binary)
 
     print(f"[TEST] loss {te_loss:.4f} acc {te_acc:.4f}")
     print(f"Confusion Matrix => TP {TP}, TN {TN}, FP {FP}, FN {FN}, acc_check {acc2:.4f}")
