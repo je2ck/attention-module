@@ -444,7 +444,7 @@ def main(
     binary = (num_classes == 1)
 
     # Datasets / Loaders
-    train_ds = AtomTwoChannelDataset(train_csv, image_size=image_size, augment=True, binary=binary)
+    train_ds = AtomTwoChannelDataset(train_csv, image_size=image_size, augment=False, binary=binary)
     val_ds = AtomTwoChannelDataset(val_csv, image_size=image_size, augment=False, binary=binary)
     test_ds = AtomTwoChannelDataset(test_csv, image_size=image_size, augment=False, binary=binary)
 
