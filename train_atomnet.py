@@ -487,7 +487,8 @@ def main(
     scaler = torch.cuda.amp.GradScaler() if (use_amp and device.type == "cuda") else None
 
     # EMA
-    ema = ModelEMA(model, decay=ema_decay)
+    # ema = ModelEMA(model, decay=ema_decay)
+    ema=None
 
     # Train loop + Early Stopping
     best_val_acc = -1.0
@@ -511,7 +512,7 @@ def main(
             best_epoch = ep
             no_improve = 0
             # EMA 가중치로 저장
-            ema.apply_shadow(model)
+            # ema.apply_shadow(model)
             torch.save(
                 {"model": model.state_dict(), "epoch": ep, "val_acc": va_acc},
                 best_path
@@ -540,7 +541,7 @@ def main(
         model.load_state_dict(ckpt["model"])
         print(f"Loaded best checkpoint from epoch {ckpt['epoch']} with val_acc={ckpt['val_acc']:.4f}")
 
-    te_loss, te_acc = evaluate(model, test_ld, loss_fn, device, binary)
+    te_loss, te_acc = evaluate(model, test_ld, loss_fn, device, binary, ema=None)
     acc2, TP, TN, FP, FN = evaluate_confusion(model, test_ld, device, binary)
 
     print(f"[TEST] loss {te_loss:.4f} acc {te_acc:.4f}")
