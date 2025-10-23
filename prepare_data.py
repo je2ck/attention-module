@@ -10,10 +10,10 @@ import re
 # -------------------------
 DATASET_ROOT = Path("dataset")
 RAW_ROOT = DATASET_ROOT / "5ms"
-IMAGES_ROOT = Path("dataset/images") 
+IMAGES_ROOT = Path("dataset/images")
 
 # 입력 원본 폴더(단일)
-RAW_DIR = RAW_ROOT / "raw"          # frame_000.png ...
+RAW_DIR = RAW_ROOT / "raw"            # frame_000.png ...
 DENOISED_DIR = RAW_ROOT / "denoised"  # out_000.png ...
 
 # 좌표/라벨(글로벌)
@@ -22,9 +22,9 @@ LABELS_PATH = RAW_ROOT / "label9.npy"        # 또는 .json
 
 # 크롭 16×16
 CROP_SIZE = 16
-SPLIT_RATIOS = (0.8, 0.1, 0.1)  # train, val, test
+SPLIT_RATIOS = (0.8, 0.1, 0.1)  # train, val, test (프레임 기반 분할)
 SPLITS = ("train", "val", "test")
-RNG_SEED = 42  # 프레임 랜덤 분할 시드
+RNG_SEED = 42  # 프레임/샘플 선택 시드
 
 # -------------------------
 # 파일명에서 프레임 인덱스 추출
@@ -98,9 +98,11 @@ def crop_center_16(img: Image.Image, y: int, x: int) -> Image.Image:
     return out
 
 # -------------------------
-# 메인 파이프라인 (단일 폴더 → split 생성)
+# 메인 파이프라인 (단일 폴더 → split 생성, 각 split 0/1 균형)
 # -------------------------
 def main():
+    rng = np.random.default_rng(RNG_SEED)
+
     # 인덱스 매핑
     raw_map = {}
     for p in sorted(RAW_DIR.glob("*.png")):
@@ -124,6 +126,7 @@ def main():
     # 라벨/포지션 로딩
     positions = load_positions(POSITIONS_PATH)   # (n_sites,2)
     truth = load_labels(LABELS_PATH)             # (n_frames,n_sites) bool
+
     n_sites = positions.shape[0]
     n_frames = truth.shape[0]
 
@@ -131,27 +134,64 @@ def main():
     if max_idx >= n_frames:
         print(f"[경고] truth 프레임 수({n_frames}) < 최대 파일 인덱스({max_idx}). 겹치는 구간만 처리합니다.")
 
-    # 프레임 단위 분할
+    # 프레임 단위 분할 (층화 없음: 프레임 기준 랜덤)
     frames = np.array(common_frames, dtype=int)
-    rng = np.random.default_rng(RNG_SEED)
     perm = rng.permutation(frames)
 
     n = len(frames)
     n_train = int(round(n * SPLIT_RATIOS[0]))
-    n_val = int(round(n * SPLIT_RATIOS[1]))
-    # 남은 건 test
-    n_test = n - n_train - n_val
+    n_val   = int(round(n * SPLIT_RATIOS[1]))
+    n_test  = n - n_train - n_val
 
     train_frames = set(perm[:n_train].tolist())
     val_frames   = set(perm[n_train:n_train+n_val].tolist())
     test_frames  = set(perm[n_train+n_val:].tolist())
 
-    split_of = {}
-    for f in train_frames: split_of[f] = "train"
-    for f in val_frames:   split_of[f] = "val"
-    for f in test_frames:  split_of[f] = "test"
+    def which_split(frame_idx: int) -> str:
+        if frame_idx in train_frames: return "train"
+        if frame_idx in val_frames:   return "val"
+        return "test"
 
-    # split별 출력 폴더 & CSV 준비
+    # 1) 크롭 후보를 split/label 별로 수집 (저장은 아직 X)
+    buckets = {s: {0: [], 1: []} for s in SPLITS}
+    for frame_idx in common_frames:
+        if frame_idx >= n_frames:
+            continue
+        split = which_split(frame_idx)
+        for site_idx, (y, x) in enumerate(positions):
+            label = int(bool(truth[frame_idx, site_idx]))  # 0/1
+            uid = f"{frame_idx:06d}_{site_idx:03d}"
+            # 저장 시 필요한 정보만 모아둠
+            buckets[split][label].append({
+                "uid": uid,
+                "frame_idx": frame_idx,
+                "site_idx": site_idx,
+                "y": int(y), "x": int(x)
+            })
+
+    # 2) 각 split에서 0/1을 1:1로 언더샘플링
+    balanced = {s: [] for s in SPLITS}
+    for split in SPLITS:
+        pos_list = buckets[split][1]
+        neg_list = buckets[split][0]
+        n_pos = len(pos_list)
+        n_neg = len(neg_list)
+
+        if n_pos == 0 or n_neg == 0:
+            print(f"[경고] {split}: 한 클래스가 0개입니다. (pos={n_pos}, neg={n_neg}) 균형 불가, 가능한 것만 사용.")
+            chosen = pos_list + neg_list
+        else:
+            k = min(n_pos, n_neg)
+            pos_idx = rng.permutation(n_pos)[:k]
+            neg_idx = rng.permutation(n_neg)[:k]
+            chosen = [pos_list[i] for i in pos_idx] + [neg_list[i] for i in neg_idx]
+
+        # 셔플
+        chosen = [chosen[i] for i in rng.permutation(len(chosen))]
+        balanced[split] = chosen
+        print(f"[정보] {split}: pos={n_pos}, neg={n_neg} -> balanced={len(chosen)} (각 {len(chosen)//2}개 기준)")
+
+    # 3) 출력 폴더/CSV 준비
     out_dirs = {}
     writers = {}
     csv_files = {}
@@ -170,43 +210,45 @@ def main():
         w.writerow(["id", "raw_path", "denoised_path", "label"])
         writers[split] = w
 
-    # 처리
-    for frame_idx in common_frames:
-        if frame_idx >= n_frames:
-            continue
-        split = split_of[frame_idx]
-        raw_img = Image.open(raw_map[frame_idx])
-        den_img = Image.open(den_map[frame_idx])
-
+    # 4) 선택된 샘플만 실제 크롭/저장 + CSV 기록
+    #    (이미지를 여러 번 여는 비용을 줄이려 frame 단위로 처리)
+    for split in SPLITS:
         raw_out_dir, den_out_dir = out_dirs[split]
         writer = writers[split]
 
-        for site_idx, (y, x) in enumerate(positions):
-            raw_crop = crop_center_16(raw_img, int(y), int(x))
-            den_crop = crop_center_16(den_img, int(y), int(x))
-            label = int(bool(truth[frame_idx, site_idx]))  # 0/1
+        # 선택된 샘플을 프레임별로 그룹화
+        by_frame = {}
+        for item in balanced[split]:
+            by_frame.setdefault(item["frame_idx"], []).append(item)
 
-            uid = f"{frame_idx:06d}_{site_idx:03d}"
-            raw_out_path = raw_out_dir / f"{uid}.png"
-            den_out_path = den_out_dir / f"{uid}.png"
-            raw_crop.save(raw_out_path)
-            den_crop.save(den_out_path)
+        for frame_idx, items in by_frame.items():
+            raw_img = Image.open(raw_map[frame_idx])
+            den_img = Image.open(den_map[frame_idx])
 
-            # CSV에는 dataset/ 기준 상대경로 기록
-            raw_rel = raw_out_path.relative_to(DATASET_ROOT.parent)   # "dataset/..."
-            den_rel = den_out_path.relative_to(DATASET_ROOT.parent)
-            writer.writerow([uid, str(raw_rel), str(den_rel), label])
+            for it in items:
+                uid = it["uid"]; y = it["y"]; x = it["x"]
+                site_idx = it["site_idx"]
+                label = int(bool(truth[frame_idx, site_idx]))
+
+                raw_crop = crop_center_16(raw_img, y, x)
+                den_crop = crop_center_16(den_img, y, x)
+
+                raw_out_path = raw_out_dir / f"{uid}.png"
+                den_out_path = den_out_dir / f"{uid}.png"
+                raw_crop.save(raw_out_path)
+                den_crop.save(den_out_path)
+
+                # CSV에는 dataset/ 기준 상대경로 기록
+                raw_rel = raw_out_path.relative_to(DATASET_ROOT.parent)   # "dataset/..."
+                den_rel = den_out_path.relative_to(DATASET_ROOT.parent)
+                writer.writerow([uid, str(raw_rel), str(den_rel), label])
 
     # CSV 닫기
     for f in csv_files.values():
         f.close()
 
-    print("[완료] Splits:")
-    print(f"  train: {len(train_frames)} frames")
-    print(f"  val:   {len(val_frames)} frames")
-    print(f"  test:  {len(test_frames)} frames")
+    # 리포트
+    print("\n[완료] Balanced splits (per split, 0/1 1:1 under-sampling):")
     for split in SPLITS:
-        print(f"  {split} CSV -> {IMAGES_ROOT / split / 'crops_16_pairs.csv'}")
-
-if __name__ == "__main__":
-    main()
+        rows_path = IMAGES_ROOT / split / "crops_16_pairs.csv"
+        print(f"  {split} CSV -> {rows_path}")
