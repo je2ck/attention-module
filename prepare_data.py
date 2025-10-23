@@ -252,3 +252,6 @@ def main():
     for split in SPLITS:
         rows_path = IMAGES_ROOT / split / "crops_16_pairs.csv"
         print(f"  {split} CSV -> {rows_path}")
+        
+if __name__ == "__main__":
+    main()
