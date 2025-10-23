@@ -110,7 +110,7 @@ def to_tensor_3ch(
     den_img: np.ndarray,
     size: Tuple[int,int] = (16,16),
     ring_border: int = 3,
-    do_ring_norm: bool = True,
+    do_ring_norm: bool = False,
     sigma_bg: float = 2.5  # HF용
 ) -> torch.Tensor:
     from PIL import Image
@@ -181,6 +181,21 @@ def weak_augment(x: torch.Tensor) -> torch.Tensor:
         x = torch.clamp(x + noise, 0.0, 1.0)
     return x
 
+def weak_augment_rawscale(x: torch.Tensor) -> torch.Tensor:
+    # x: (C,H,W), 각 채널 [0,1]
+    if random.random() < 0.5:
+        x = torch.flip(x, dims=[2])
+    if random.random() < 0.5:
+        x = torch.flip(x, dims=[1])
+    if random.random() < 0.3:
+        # 밝기/대비 (0.9~1.1)
+        b = 0.02 * (2*random.random()-1)   # [-0.02, 0.02]
+        c = 1.0 + 0.1 * (2*random.random()-1)  # [0.9, 1.1]
+        x = torch.clamp(c * x + b, 0.0, 1.0)
+    if random.random() < 0.3:
+        x = torch.clamp(x + 0.01*torch.randn_like(x), 0.0, 1.0)
+    return x
+
 
 # ---------------------------
 # Dataset
@@ -204,11 +219,11 @@ class AtomTwoChannelDataset(Dataset):
 
         raw = imread_grayscale(raw_path)
         den = imread_grayscale(den_path)
-        # x = to_tensor_3ch(raw, den, size=self.image_size)  # (3, H, W)
-        x = to_tensor_2ch(raw, den, size=self.image_size)  # (2, H, W)
+        x = to_tensor_3ch(raw, den, size=self.image_size)  # (3, H, W)
+        # x = to_tensor_2ch(raw, den, size=self.image_size)  # (2, H, W)
 
         if self.augment:
-            x = weak_augment(x)
+            x = weak_augment_rawscale(x)
 
         if self.binary:
             y = torch.tensor([float(label)], dtype=torch.float32)  # shape (1,)
@@ -444,7 +459,7 @@ def main(
     binary = (num_classes == 1)
 
     # Datasets / Loaders
-    train_ds = AtomTwoChannelDataset(train_csv, image_size=image_size, augment=False, binary=binary)
+    train_ds = AtomTwoChannelDataset(train_csv, image_size=image_size, augment=True, binary=binary)
     val_ds = AtomTwoChannelDataset(val_csv, image_size=image_size, augment=False, binary=binary)
     test_ds = AtomTwoChannelDataset(test_csv, image_size=image_size, augment=False, binary=binary)
 
@@ -455,7 +470,7 @@ def main(
     # Model
     model = AtomCBAMNet(
         num_classes=num_classes,
-        in_channels=2,
+        in_channels=3,
         r1=r1, r2=r2,
         dropout=dropout
     ).to(device)
@@ -476,9 +491,9 @@ def main(
         max_lr=max_lr,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
-        pct_start=0.15,
+        pct_start=0.3,
         anneal_strategy='cos',
-        div_factor=base_lr / max(1e-12, base_lr),  # 기본값 무시: base_lr 그대로 사용
+        div_factor=max_lr/base_lr,  # 기본값 무시: base_lr 그대로 사용
         final_div_factor=1e4,
         three_phase=False
     )
@@ -559,7 +574,7 @@ if __name__ == "__main__":
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--base_lr", type=float, default=3e-4)
-    p.add_argument("--max_lr", type=float, default=8e-4)
+    p.add_argument("--max_lr", type=float, default=6e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--r1", type=int, default=8)

@@ -12,7 +12,13 @@ def conv_bn_relu(in_ch, out_ch, k=3, s=1, p=1):
         nn.ReLU(inplace=True),
     )
 
-
+def conv_gn_relu(in_ch, out_ch, k=3, s=1, p=1, groups=8):
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p, bias=False),
+        nn.GroupNorm(num_groups=min(groups, out_ch), num_channels=out_ch),
+        nn.ReLU(inplace=True),
+    )
+    
 class AtomCBAMNet(nn.Module):
     """
     입력  : (B, 2, 16, 16)  # [raw_normalized, denoised]
@@ -33,14 +39,14 @@ class AtomCBAMNet(nn.Module):
         super().__init__()
 
         # Stage 1 (16x16 -> 8x8)
-        self.s1a = conv_bn_relu(in_channels, 32, k=3, s=1, p=1)
-        self.s1b = conv_bn_relu(32, 32, k=3, s=1, p=1)
+        self.s1a = conv_gn_relu(in_channels, 32, k=3, s=1, p=1)
+        self.s1b = conv_gn_relu(32, 32, k=3, s=1, p=1)
         self.cbam1 = CBAM(32, r1)          # 네 cbam.py의 인터페이스 그대로
         self.pool1 = nn.MaxPool2d(2, 2)
 
         # Stage 2 (8x8 -> 4x4)
-        self.s2a = conv_bn_relu(32, 64, k=3, s=1, p=1)
-        self.s2b = conv_bn_relu(64, 64, k=3, s=1, p=1)
+        self.s2a = conv_gn_relu(32, 64, k=3, s=1, p=1)
+        self.s2b = conv_gn_relu(64, 64, k=3, s=1, p=1)
         self.cbam2 = CBAM(64, r2)
         self.pool2 = nn.MaxPool2d(2, 2)
 
