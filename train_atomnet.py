@@ -4,6 +4,7 @@ import csv
 import math
 import random
 from typing import Tuple, List, Optional
+from scipy.ndimage import gaussian_filter
 
 import torch
 import torch.nn as nn
@@ -104,6 +105,67 @@ def to_tensor_2ch(raw_img: np.ndarray,
     stacked = np.stack([raw, den], axis=0).astype(np.float32)
     return torch.from_numpy(stacked)
 
+def to_tensor_3ch(
+    raw_img: np.ndarray,
+    den_img: np.ndarray,
+    size: Tuple[int,int] = (16,16),
+    ring_border: int = 3,
+    do_ring_norm: bool = True,
+    sigma_bg: float = 2.5  # HF용
+) -> torch.Tensor:
+    from PIL import Image
+    import numpy as np
+    import torch
+
+    # 1) 리사이즈
+    H, W = size
+    raw = np.asarray(Image.fromarray(raw_img).resize((W, H), Image.BILINEAR)).astype(np.float32)
+    den = np.asarray(Image.fromarray(den_img).resize((W, H), Image.BILINEAR)).astype(np.float32)
+
+    # 2) [0,1] 스케일
+    if raw.max() > 1.0: raw /= 255.0
+    if den.max() > 1.0: den /= 255.0
+    raw = np.clip(raw, 0.0, 1.0)
+    den = np.clip(den, 0.0, 1.0)
+
+    # 3) ring 기반 z-score 정규화 on raw
+    if do_ring_norm:
+        h, w = raw.shape
+        b = max(1, min(ring_border, h//2, w//2))
+        ring_mask = np.zeros((h, w), dtype=bool)
+        ring_mask[:b, :]  = True
+        ring_mask[-b:, :] = True
+        ring_mask[:, :b]  = True
+        ring_mask[:, -b:] = True
+        ring_pixels = raw[ring_mask]
+        mu = float(ring_pixels.mean())
+        sd = float(ring_pixels.std() + 1e-8)
+        raw_norm = (raw - mu) / sd
+    else:
+        raw_norm = raw  # 그대로 사용
+
+    # 4) HF 채널: raw_norm - GaussianBlur(raw_norm, sigma_bg)
+    try:
+        low = gaussian_filter(raw_norm, sigma=sigma_bg, mode="reflect")
+    except Exception:
+        try:
+            import cv2
+            k = int(max(3, 2*round(3*sigma_bg)+1))
+            low = cv2.GaussianBlur(raw_norm, (k,k), sigmaX=sigma_bg, borderType=cv2.BORDER_REFLECT101)
+        except Exception:
+            k = int(max(3, 2*round(3*sigma_bg)+1))
+            pad = k // 2
+            padimg = np.pad(raw_norm, pad, mode='reflect')
+            cumsum = padimg.cumsum(0).cumsum(1)
+            low = (cumsum[k:,k:] - cumsum[:-k,k:] - cumsum[k:,:-k] + cumsum[:-k,:-k]) / (k*k)
+
+    hf = raw_norm - low
+    hf = (hf - hf.mean()) / (hf.std() + 1e-8)  # 안정적 스케일
+
+    # 5) 최종 3채널 스택: (raw_norm, den, hf)
+    stacked = np.stack([raw_norm, den, hf], axis=0).astype(np.float32)
+    return torch.from_numpy(stacked)
+
 
 # 간단한 약한 augmentation (작은 ROI이므로 과하지 않게)
 def weak_augment(x: torch.Tensor) -> torch.Tensor:
@@ -142,6 +204,7 @@ class AtomTwoChannelDataset(Dataset):
 
         raw = imread_grayscale(raw_path)
         den = imread_grayscale(den_path)
+        # x = to_tensor_3ch(raw, den, size=self.image_size)  # (3, H, W)
         x = to_tensor_2ch(raw, den, size=self.image_size)  # (2, H, W)
 
         if self.augment:
