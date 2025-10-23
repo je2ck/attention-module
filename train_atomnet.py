@@ -499,11 +499,11 @@ def main(
     for ep in range(1, epochs + 1):
         tr_loss, tr_acc = train_one_epoch(
             model, train_ld, optimizer, loss_fn, device, scaler, binary,
-            scheduler=scheduler, ema=ema
+            scheduler=scheduler, ema=None
         )
 
         # 검증은 EMA 가중치로 평가 (일반화에 유리)
-        va_loss, va_acc = evaluate(model, val_ld, loss_fn, device, binary, ema=ema)
+        va_loss, va_acc = evaluate(model, val_ld, loss_fn, device, binary, ema=None)
 
         # Early stopping 로직
         improved = (va_acc - best_val_acc) > es_min_delta
@@ -517,7 +517,7 @@ def main(
                 {"model": model.state_dict(), "epoch": ep, "val_acc": va_acc},
                 best_path
             )
-            ema.restore(model)
+            # ema.restore(model)
         else:
             no_improve += 1
 
