@@ -43,7 +43,7 @@ def imread_grayscale(path: str) -> np.ndarray:
     return np.array(img)  # H×W (uint8 or float)
 
 
-def to_tensor_2ch(raw_img: np.ndarray, den_img: np.ndarray, size: Tuple[int, int] = (16, 16)) -> torch.Tensor:
+def to_tensor_2ch_naive(raw_img: np.ndarray, den_img: np.ndarray, size: Tuple[int, int] = (16, 16)) -> torch.Tensor:
     # 리사이즈
     H, W = size
     raw_pil = Image.fromarray(raw_img).resize((W, H), resample=Image.BILINEAR)
@@ -64,6 +64,45 @@ def to_tensor_2ch(raw_img: np.ndarray, den_img: np.ndarray, size: Tuple[int, int
     # 2채널로 쌓기 → (2, H, W)
     stacked = np.stack([raw, den], axis=0)
     return torch.from_numpy(stacked)  # float32 tensor
+
+
+def to_tensor_2ch(raw_img: np.ndarray,
+                  den_img: np.ndarray,
+                  size: Tuple[int,int]=(16,16),
+                  ring_border: int = 3,
+                  do_ring_norm: bool = True) -> torch.Tensor:
+    from PIL import Image
+    import numpy as np
+    import torch
+
+    H, W = size
+    # 1) 리사이즈
+    raw = np.asarray(Image.fromarray(raw_img).resize((W, H), Image.BILINEAR)).astype(np.float32)
+    den = np.asarray(Image.fromarray(den_img).resize((W, H), Image.BILINEAR)).astype(np.float32)
+
+    # 2) [0,1] 스케일 (카메라 uint8/uint16 대응)
+    if raw.max() > 1.0: raw /= 255.0
+    if den.max() > 1.0: den /= 255.0
+    raw = np.clip(raw, 0.0, 1.0)
+    den = np.clip(den, 0.0, 1.0)
+
+    # 3) ring 기반 z-score 정규화 (raw에만; den은 그대로 두는 걸 기본값으로)
+    if do_ring_norm:
+        h, w = raw.shape
+        b = max(1, min(ring_border, h // 2, w // 2))
+        mask = np.zeros((h, w), dtype=bool)
+        mask[:b, :]  = True
+        mask[-b:, :] = True
+        mask[:, :b]  = True
+        mask[:, -b:] = True
+        ring = raw[mask]
+        mu = float(ring.mean())
+        sd = float(ring.std() + 1e-8)
+        raw = (raw - mu) / sd
+        # ⚠️ 여기서 raw는 z-score이므로 절대 다시 clip(0~1) 하지 마!
+
+    stacked = np.stack([raw, den], axis=0).astype(np.float32)
+    return torch.from_numpy(stacked)
 
 
 # 간단한 약한 augmentation (작은 ROI이므로 과하지 않게)
