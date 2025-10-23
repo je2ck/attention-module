@@ -421,6 +421,70 @@ def evaluate_confusion(model, loader, device, binary: bool):
     acc = (TP + TN) / total if total > 0 else 0.0
     return acc, TP, TN, FP, FN
 
+@torch.no_grad()
+def sweep_threshold(model, loader, device, metric: str = "accuracy"):
+    """
+    val 로더에서 logit → sigmoid 확률로 바꾼 뒤, τ∈[0,1]을 스윕해
+    지정 metric을 최대화하는 τ*를 찾는다.
+    metric ∈ {"accuracy","f1","youden"}  (youden=TPR+TNR-1)
+    """
+    assert metric in {"accuracy","f1","youden"}
+    model.eval()
+    probs_all, y_all = [], []
+    for x, y in loader:
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True).view(-1).float()  # (B,)
+        logits = model(x).view(-1)                            # (B,), num_classes=1 전제
+        probs = torch.sigmoid(logits)                         # (B,)
+        probs_all.append(probs.detach().cpu())
+        y_all.append(y.detach().cpu())
+    probs = torch.cat(probs_all)    # (N,)
+    y = torch.cat(y_all)            # (N,)
+
+    taus = torch.linspace(0.0, 1.0, steps=501)
+    best_tau, best_score = 0.5, -1.0
+    best_cm = (0,0,0,0)
+    for t in taus:
+        pred = (probs >= t).float()
+        TP = ((pred==1) & (y==1)).sum().item()
+        TN = ((pred==0) & (y==0)).sum().item()
+        FP = ((pred==1) & (y==0)).sum().item()
+        FN = ((pred==0) & (y==1)).sum().item()
+        if metric == "accuracy":
+            score = (TP + TN) / max(1, TP+TN+FP+FN)
+        elif metric == "f1":
+            prec = TP / max(1, TP+FP)
+            rec  = TP / max(1, TP+FN)
+            score = 0.0 if (prec+rec)==0 else 2*prec*rec/(prec+rec)
+        else:  # youden
+            TPR = TP / max(1, TP+FN)
+            TNR = TN / max(1, TN+FP)
+            score = TPR + TNR - 1
+        if score > best_score:
+            best_score = score
+            best_tau = float(t)
+            best_cm = (TP, TN, FP, FN)
+    return best_tau, best_score, best_cm
+
+
+@torch.no_grad()
+def test_with_tau(model, loader, device, tau: float):
+    """고정 임계값 tau로 test 성능 평가 + 혼동행렬"""
+    model.eval()
+    TP=TN=FP=FN=0
+    for x, y in loader:
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True).view(-1).float()
+        logits = model(x).view(-1)
+        p = torch.sigmoid(logits)
+        pred = (p >= tau).float()
+        TP += ((pred==1) & (y==1)).sum().item()
+        TN += ((pred==0) & (y==0)).sum().item()
+        FP += ((pred==1) & (y==0)).sum().item()
+        FN += ((pred==0) & (y==1)).sum().item()
+    acc = (TP+TN) / max(1, TP+TN+FP+FN)
+    return acc, (TP, TN, FP, FN)
+
 
 # ---------------------------
 # Main
@@ -556,12 +620,15 @@ def main(
         model.load_state_dict(ckpt["model"])
         print(f"Loaded best checkpoint from epoch {ckpt['epoch']} with val_acc={ckpt['val_acc']:.4f}")
 
-    te_loss, te_acc = evaluate(model, test_ld, loss_fn, device, binary, ema=None)
-    acc2, TP, TN, FP, FN = evaluate_confusion(model, test_ld, device, binary)
+    # (선택) 일반 accuracy도 보고
+    te_loss, te_acc = evaluate(model, test_ld, loss_fn, device, binary=True, ema=None)
+    print(f"[TEST(0.5 τ 가정)] loss {te_loss:.4f} acc {te_acc:.4f}")
 
-    print(f"[TEST] loss {te_loss:.4f} acc {te_acc:.4f}")
-    print(f"Confusion Matrix => TP {TP}, TN {TN}, FP {FP}, FN {FN}, acc_check {acc2:.4f}")
-
+    # ★ 핵심: val에서 τ*를 찾고 test에 고정 적용
+    best_tau, best_val_metric, cm_val = sweep_threshold(model, val_ld, device, metric="accuracy")
+    print(f"[VAL] best τ={best_tau:.3f} | acc={best_val_metric:.4f} | CM(val) TP{cm_val[0]} TN{cm_val[1]} FP{cm_val[2]} FN{cm_val[3]}")
+    te_acc_fixed, cm_test = test_with_tau(model, test_ld, device, best_tau)
+    print(f"[TEST] τ={best_tau:.3f} | acc={te_acc_fixed:.4f} | CM(test) TP{cm_test[0]} TN{cm_test[1]} FP{cm_test[2]} FN{cm_test[3]}")
 
 if __name__ == "__main__":
     import argparse
@@ -569,7 +636,7 @@ if __name__ == "__main__":
     p.add_argument("--train_csv", type=str, default="./dataset/images/train/crops_16_pairs.csv")
     p.add_argument("--val_csv", type=str, default="./dataset/images/val/crops_16_pairs.csv")
     p.add_argument("--test_csv", type=str, default="./dataset/images/test/crops_16_pairs.csv")
-    p.add_argument("--num_classes", type=int, default=2, help="이진이면 1, 다중 클래스는 K")
+    p.add_argument("--num_classes", type=int, default=1, help="이진이면 1, 다중 클래스는 K")
     p.add_argument("--image_size", type=int, nargs=2, default=(16, 16))
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--epochs", type=int, default=30)
