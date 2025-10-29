@@ -9,7 +9,7 @@ import re
 # 사용자 환경 설정
 # -------------------------
 DATASET_ROOT = Path("dataset")
-RAW_ROOT = DATASET_ROOT / "5ms"
+RAW_ROOT = DATASET_ROOT / "10ms"
 IMAGES_ROOT = Path("dataset/images")
 
 # 입력 원본 폴더(단일)
@@ -17,8 +17,8 @@ RAW_DIR = RAW_ROOT / "raw"            # frame_000.png ...
 DENOISED_DIR = RAW_ROOT / "denoised"  # out_000.png ...
 
 # 좌표/라벨(글로벌)
-POSITIONS_PATH = RAW_ROOT / "position9.npy"  # (n_sites,2) (y,x)
-LABELS_PATH = RAW_ROOT / "label9.npy"        # 또는 .json
+POSITIONS_PATH = RAW_ROOT / "position0.npy"  # (n_sites,2) (y,x)
+LABELS_PATH = RAW_ROOT / "label0_test.npy"        # 또는 .json
 
 # 크롭 16×16
 CROP_SIZE = 16

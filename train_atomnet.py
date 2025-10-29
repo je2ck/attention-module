@@ -571,6 +571,7 @@ def main(
 
     # Train loop + Early Stopping
     best_val_acc = -1.0
+    best_val_loss=float("inf")
     best_epoch = 0
     no_improve = 0
     best_path = os.path.join(out_dir, "best.pt")
@@ -585,9 +586,10 @@ def main(
         va_loss, va_acc = evaluate(model, val_ld, loss_fn, device, binary, ema=None)
 
         # Early stopping 로직
-        improved = (va_acc - best_val_acc) > es_min_delta
+        improved = (va_acc - best_val_acc) > es_min_delta or (best_val_loss - va_loss) > es_min_delta
         if improved:
             best_val_acc = va_acc
+            best_val_loss = va_loss
             best_epoch = ep
             no_improve = 0
             # EMA 가중치로 저장
@@ -639,7 +641,7 @@ if __name__ == "__main__":
     p.add_argument("--num_classes", type=int, default=1, help="이진이면 1, 다중 클래스는 K")
     p.add_argument("--image_size", type=int, nargs=2, default=(16, 16))
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--base_lr", type=float, default=3e-4)
     p.add_argument("--max_lr", type=float, default=6e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
